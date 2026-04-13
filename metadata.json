@@ -1,0 +1,5 @@
+{
+  "name": "BOM Visualizer",
+  "description": "A visual tool for managing and displaying Bill of Materials with grouping and filtering capabilities.",
+  "requestFramePermissions": []
+}
