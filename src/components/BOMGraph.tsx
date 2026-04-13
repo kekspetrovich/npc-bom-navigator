@@ -58,7 +58,9 @@ const CustomNode = ({ data }: NodeProps<any>) => {
     usedIn,
     consistsOf,
     onNavigate,
-    localQty
+    localQty,
+    totalSourceQty,
+    totalSourceUom
   } = data;
 
   const handleCopy = (e: React.MouseEvent) => {
@@ -168,7 +170,7 @@ ${route === 'buy' ? `Поставщик: ${supplier || 'Не указан'}` : '
           <div className="text-[10px] space-y-0.5">
             {quantity !== undefined && (
               <div className={isRoot ? 'font-bold text-amber-800' : ''}>
-                Кол-во: {localQty ? `${localQty} (из ${quantity.toFixed(2)}${uom ? ` ${uom}` : ''})` : `${quantity.toFixed(2)}${uom ? ` ${uom}` : ''}`}
+                Кол-во: {localQty ? `${localQty} (из ${totalSourceQty?.toFixed(2)}${totalSourceUom ? ` ${totalSourceUom}` : ''})` : `${quantity.toFixed(2)}${uom ? ` ${uom}` : ''}`}
               </div>
             )}
             {data.standard_price !== undefined && (
@@ -404,11 +406,9 @@ const getSubtreeItems = (items: BOMItem[], stageId: string) => {
   findDescendants(stageId);
   
   const subtree = items.filter(i => i.id === stageId || descendants.has(i.id));
-  const scale = 1 / rootStage.quantity;
   
   return subtree.map(i => ({
     ...i,
-    quantity: i.quantity * scale,
     isRoot: i.id === stageId,
     parentId: i.id === stageId ? undefined : i.parentId
   }));
@@ -445,23 +445,10 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
   }, [items, searchQuery]);
 
   const handleSearchSelect = (name: string) => {
-    setSearchQuery(name);
+    setSearchQuery('');
     setIsSearchOpen(false);
-    
-    // Find the node that contains this item
-    const targetNode = nodes.find(n => {
-      if (n.data.label === name) return true;
-      if (n.data.items?.some((item: any) => item.name === name)) return true;
-      return false;
-    });
-
-    if (targetNode) {
-      setSelectedNodeId(targetNode.id);
-      // Center view on node
-      setTimeout(() => {
-        fitView({ nodes: [{ id: targetNode.id }], duration: 800, padding: 2 });
-      }, 50);
-    }
+    // Use a special prefix to indicate this is a name-based selection
+    setSelectedNodeId(`name:${name}`);
   };
 
   const stages = useMemo(() => {
@@ -472,9 +459,155 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
     const processedItems = selectedStageId ? getSubtreeItems(items, selectedStageId) : [...items];
     let finalEdges: Edge[] = [];
 
+    // Check if we are in "Name Focus" mode (from search or if grouped by none)
+    const isNameFocus = selectedNodeId?.startsWith('name:') || (groupBy === 'none' && selectedNodeId && !items.find(i => i.id === selectedNodeId));
+    const focusName = isNameFocus 
+      ? (selectedNodeId?.startsWith('name:') ? selectedNodeId?.replace('name:', '') : selectedNodeId) 
+      : null;
+
     // 1. Grouping Logic
     let displayNodes: Node[] = [];
     
+    if (isNameFocus && focusName) {
+      // Special mode: Merge all items with the same name into one central node
+      const matchingItems = items.filter(i => i.name === focusName);
+      if (matchingItems.length === 0) return { nodes: [], edges: [] };
+
+      const first = matchingItems[0];
+      const totalQty = matchingItems.reduce((sum, i) => sum + i.quantity, 0);
+      
+      // Create the central merged node
+      const centralNodeId = `name:${focusName}`;
+      const centralNode: Node = {
+        id: centralNodeId,
+        type: 'custom',
+        position: { x: 0, y: 0 },
+        data: {
+          ...first,
+          id: centralNodeId,
+          quantity: totalQty,
+          label: focusName,
+          isGrouped: matchingItems.length > 1,
+          items: matchingItems,
+          usedIn: [],
+          consistsOf: []
+        }
+      };
+
+      // Find all parents and children for ALL matching items
+      const usedInMap: Record<string, any> = {};
+      const consistsOfMap: Record<string, any> = {};
+
+      matchingItems.forEach(item => {
+        // Parents
+        if (item.parentId) {
+          const parentInfo = getEffectiveParentInfo(items, item.parentId, showVirtual);
+          if (parentInfo) {
+            const parent = items.find(p => p.id === parentInfo.id);
+            if (parent) {
+              const key = parent.id;
+              if (!usedInMap[key]) {
+                usedInMap[key] = { 
+                  id: parent.id, 
+                  label: parent.name, 
+                  qty: 0, 
+                  uom: parent.uom,
+                  route: parent.route,
+                  group: parent.group,
+                  isRoot: !parent.parentId
+                };
+              }
+              // Use the item's own quantity which is absolute in the project
+              usedInMap[key].qty += item.quantity;
+            }
+          }
+        }
+
+        // Children
+        items.forEach(child => {
+          if (child.parentId === item.id) {
+            const key = child.name;
+            if (!consistsOfMap[key]) {
+              consistsOfMap[key] = {
+                id: child.id,
+                label: child.name,
+                qty: 0,
+                uom: child.uom,
+                route: child.route,
+                group: child.group
+              };
+            }
+            consistsOfMap[key].qty += child.quantity;
+          }
+        });
+      });
+
+      const usedInList = Object.values(usedInMap);
+      const consistsOfList = Object.values(consistsOfMap);
+      
+      centralNode.data.usedIn = usedInList;
+      centralNode.data.consistsOf = consistsOfList;
+      displayNodes.push(centralNode);
+
+      // Create nodes for parents and children
+      usedInList.forEach((p: any) => {
+        displayNodes.push({
+          id: p.id,
+          type: 'custom',
+          position: { x: -400, y: 0 },
+          data: { ...items.find(i => i.id === p.id), label: p.label, quantity: items.find(i => i.id === p.id)?.quantity }
+        });
+        finalEdges.push({
+          id: `e-${centralNodeId}-${p.id}`,
+          source: centralNodeId,
+          target: p.id,
+          label: `${p.qty.toFixed(2)} ${p.uom || 'шт'}`,
+          type: 'smoothstep'
+        });
+      });
+
+      consistsOfList.forEach((c: any) => {
+        displayNodes.push({
+          id: c.id,
+          type: 'custom',
+          position: { x: 400, y: 0 },
+          data: { ...items.find(i => i.id === c.id), label: c.label, quantity: c.qty }
+        });
+        finalEdges.push({
+          id: `e-${c.id}-${centralNodeId}`,
+          source: c.id,
+          target: centralNodeId,
+          label: `${c.qty.toFixed(2)} ${c.uom || 'шт'}`,
+          type: 'smoothstep'
+        });
+      });
+
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(displayNodes, finalEdges, centralNodeId);
+      
+      // Post-process for focus highlighting
+      const finalNodes = layoutedNodes.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          isSelected: n.id === centralNodeId,
+          isHighlighted: n.id !== centralNodeId,
+          onNavigate: (id: string) => setSelectedNodeId(id),
+          // For parents, show how much of the focus item they contain
+          localQty: n.id !== centralNodeId && usedInMap[n.id] ? usedInMap[n.id].qty.toFixed(2) : undefined,
+          totalSourceQty: totalQty,
+          totalSourceUom: first.uom
+        }
+      }));
+
+      const finalEdgesWithStyle = layoutedEdges.map(e => ({
+        ...e,
+        animated: true,
+        style: { stroke: e.source === centralNodeId ? '#3b82f6' : '#f59e0b', strokeWidth: 3 }
+      }));
+
+      return { nodes: finalNodes, edges: finalEdgesWithStyle };
+    }
+
     if (groupBy === 'none') {
       // Merge nodes by name
       const mergedNodesMap: Record<string, BOMItem> = {};
@@ -903,13 +1036,22 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
         }
 
         let localQty = undefined;
+        let totalSourceQty = undefined;
+        let totalSourceUom = undefined;
+        
         if (selectedNodeId && !isSelected && (isTarget || isSource)) {
           const edge = layoutedEdges.find(e => 
             (e.source === node.id && e.target === selectedNodeId) || 
             (e.target === node.id && e.source === selectedNodeId)
           );
-          if (edge && typeof edge.label === 'string') {
+          if (edge) {
             localQty = edge.label;
+            // The source of the edge is the item being counted
+            const sourceNode = layoutedNodes.find(n => n.id === edge.source);
+            if (sourceNode) {
+              totalSourceQty = sourceNode.data.quantity;
+              totalSourceUom = sourceNode.data.uom;
+            }
           }
         }
 
@@ -923,6 +1065,8 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
             isDimmed: isDimmed,
             highlightedItemIds: getHighlightedItemsForNode(node.id),
             localQty,
+            totalSourceQty,
+            totalSourceUom,
             onNavigate: (id: string) => {
               setSelectedNodeId(id);
             }
