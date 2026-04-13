@@ -1,5 +1,5 @@
 {
-  "name": "BOM Visualizer",
-  "description": "A visual tool for managing and displaying Bill of Materials with grouping and filtering capabilities.",
+  "name": "NPC BOM Navigator",
+  "description": "Интерактивный инструмент для визуализации и анализа сложных производственных спецификаций (BOM).",
   "requestFramePermissions": []
 }
