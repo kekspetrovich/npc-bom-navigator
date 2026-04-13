@@ -453,6 +453,14 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    if (selectedNodeId) {
+      setTimeout(() => {
+        fitView({ duration: 800, padding: 0.5 });
+      }, 100);
+    }
+  }, [selectedNodeId, fitView]);
+
   const searchSuggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
     const query = searchQuery.toLowerCase();
@@ -519,7 +527,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
           items: mergedItems,
           usedIn: [],
           consistsOf: mergedItems.map(i => ({
-            id: i.id,
+            id: `name:${i.name}`,
             label: i.name,
             qty: i.quantity,
             uom: i.uom,
@@ -533,15 +541,16 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
 
       // Create nodes for children (items from this supplier)
       mergedItems.forEach((c: any) => {
+        const nodeId = `name:${c.name}`;
         displayNodes.push({
-          id: c.id,
+          id: nodeId,
           type: 'custom',
           position: { x: 400, y: 0 },
-          data: { ...items.find(i => i.id === c.id), label: c.name, quantity: c.quantity }
+          data: { ...items.find(i => i.id === c.id), id: nodeId, label: c.name, quantity: c.quantity }
         });
         finalEdges.push({
-          id: `e-${c.id}-${centralNodeId}`,
-          source: c.id,
+          id: `e-${nodeId}-${centralNodeId}`,
+          source: nodeId,
           target: centralNodeId,
           label: `${c.quantity.toFixed(2)} ${c.uom || 'шт'}`,
           type: 'smoothstep'
@@ -609,7 +618,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
               const key = parent.id;
               if (!usedInMap[key]) {
                 usedInMap[key] = { 
-                  id: parent.id, 
+                  id: `name:${parent.name}`, 
                   label: parent.name, 
                   qty: 0, 
                   uom: parent.uom,
@@ -618,9 +627,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
                   isRoot: !parent.parentId
                 };
               }
-              usedInMap[key].qty += item.qtyPerParent * (item.quantity / item.qtyPerParent); // Simplified: just use item.quantity if it's direct
-              // Actually, qty in usedIn should be "how many of focusName are in this parent"
-              // But for simplicity in focus mode, we show the link qty
+              usedInMap[key].qty += item.qtyPerParent * (item.quantity / item.qtyPerParent); 
             }
           }
         }
@@ -631,7 +638,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
             const key = child.name;
             if (!consistsOfMap[key]) {
               consistsOfMap[key] = {
-                id: child.id,
+                id: `name:${child.name}`,
                 label: child.name,
                 qty: 0,
                 uom: child.uom,
@@ -657,7 +664,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
           id: p.id,
           type: 'custom',
           position: { x: -400, y: 0 },
-          data: { ...items.find(i => i.id === p.id), label: p.label, quantity: items.find(i => i.id === p.id)?.quantity }
+          data: { ...items.find(i => i.name === p.label), id: p.id, label: p.label, quantity: items.find(i => i.name === p.label)?.quantity }
         });
         finalEdges.push({
           id: `e-${centralNodeId}-${p.id}`,
@@ -673,7 +680,7 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
           id: c.id,
           type: 'custom',
           position: { x: 400, y: 0 },
-          data: { ...items.find(i => i.id === c.id), label: c.label, quantity: c.qty }
+          data: { ...items.find(i => i.name === c.label), id: c.id, label: c.label, quantity: c.qty }
         });
         finalEdges.push({
           id: `e-${c.id}-${centralNodeId}`,
@@ -1317,7 +1324,10 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
         {/* Exit Focus Button */}
         {selectedNodeId && (
           <button
-            onClick={() => setSelectedNodeId(null)}
+            onClick={() => {
+              setSelectedNodeId(null);
+              setTimeout(() => fitView({ duration: 800, padding: 0.2 }), 50);
+            }}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg shadow-lg border border-blue-500 text-xs font-bold transition-all pointer-events-auto hover:bg-blue-700 hover:scale-105 active:scale-95 animate-in fade-in slide-in-from-left-4 duration-300"
           >
             <X className="w-4 h-4" />
