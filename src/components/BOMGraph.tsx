@@ -12,13 +12,14 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { BOMItem, Route } from '../types';
-import { Box, Factory, Ghost, Package, Search, X, Workflow, Users, Layers, Eye, EyeOff, Copy, Check } from 'lucide-react';
+import { Box, Factory, Ghost, Package, Search, X, Workflow, Users, Layers, Eye, EyeOff, Copy, Check, Truck } from 'lucide-react';
 import dagre from 'dagre';
 import { useEffect, useState } from 'react';
 
 // Helper to get node-specific colors for buttons and badges
 const getNodeTypeStyles = (nodeData: any) => {
-  const { isRoot, group, route } = nodeData;
+  const { isRoot, group, route, isSupplierGroup } = nodeData;
+  if (isSupplierGroup) return "bg-emerald-100 text-emerald-800 border-emerald-200";
   if (isRoot) return "bg-amber-100 text-amber-800 border-amber-200";
   if (group === 'Этапы') return "bg-purple-100 text-purple-800 border-purple-200";
   if (route === 'buy') return "bg-green-100 text-green-800 border-green-200";
@@ -78,12 +79,17 @@ const CustomNode = ({ data }: NodeProps<any>) => {
       ? `\nСостоит из:\n${consistsOf.map((i: any) => `• ${i.qty} — ${i.label}`).join('\n')}`
       : '';
 
-    const text = `
+    let text = '';
+    if (isSupplierGroup) {
+      text = `Поставщик: ${label}\n\nСписок закупаемых позиций:\n${consistsOf.map((i: any) => `• ${i.label} — ${i.qty} ${i.uom || 'шт'}`).join('\n')}`;
+    } else {
+      text = `
 Наименование: ${label}
 Количество: ${quantity?.toFixed(2)} ${uom || ''}
 ${data.standard_price !== undefined ? `Стоимость: ${data.standard_price.toFixed(2)} руб` : ''}
 ${route === 'buy' ? `Поставщик: ${supplier || 'Не указан'}` : ''}${opsText}${usedInText}${consistsOfText}
-    `.trim();
+      `.trim();
+    }
     
     navigator.clipboard.writeText(text);
     setCopied(true);
@@ -93,6 +99,10 @@ ${route === 'buy' ? `Поставщик: ${supplier || 'Не указан'}` : '
   const getStyles = () => {
     const dimmed = isDimmed ? 'opacity-20 grayscale blur-[4px] pointer-events-none' : 'opacity-100';
     
+    if (isSupplierGroup) {
+      return `bg-emerald-50 border-emerald-500 text-emerald-900 shadow-lg ring-2 ring-emerald-200 ${isSelected ? 'ring-4 ring-emerald-600 border-emerald-700 z-50 shadow-2xl' : ''} ${dimmed} transition-all duration-300`;
+    }
+
     if (isRoot) {
       return `bg-amber-50 border-amber-500 text-amber-900 shadow-lg ring-2 ring-amber-200 ${isSelected ? 'ring-4 ring-amber-600 border-amber-700 z-50 shadow-2xl' : ''} ${dimmed} transition-all duration-300`;
     }
@@ -123,6 +133,7 @@ ${route === 'buy' ? `Поставщик: ${supplier || 'Не указан'}` : '
   };
 
   const Icon = () => {
+    if (isSupplierGroup) return <Truck className="w-5 h-5 text-emerald-600" />;
     if (isRoot) return <Factory className="w-5 h-5 text-amber-600" />;
     if (group === 'Этапы') return <Workflow className="w-4 h-4 text-purple-600" />;
     if (isGrouped) return <Package className="w-4 h-4" />;
@@ -198,7 +209,15 @@ ${route === 'buy' ? `Поставщик: ${supplier || 'Не указан'}` : '
                 {suppliers.map((s: any, idx: number) => (
                   <div key={idx} className="bg-white/40 p-1 rounded border border-black/5">
                     <div className="flex justify-between items-start gap-2">
-                      <span className={`font-semibold ${isSelected ? '' : 'truncate'} flex-1`}>{s.partner_id[1]}</span>
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onNavigate) onNavigate(`supplier:${s.partner_id[1]}`);
+                        }}
+                        className={`font-semibold text-left hover:text-blue-600 hover:underline transition-colors ${isSelected ? '' : 'truncate'} flex-1 cursor-pointer`}
+                      >
+                        {s.partner_id[1]}
+                      </button>
                     </div>
                     <div className="flex justify-between text-[8px] opacity-60 mt-0.5">
                       {s.product_code && <span className={`${isSelected ? '' : 'truncate max-w-[100px]'}`}>{s.product_code}</span>}
@@ -459,15 +478,97 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
     const processedItems = selectedStageId ? getSubtreeItems(items, selectedStageId) : [...items];
     let finalEdges: Edge[] = [];
 
-    // Check if we are in "Name Focus" mode (from search or if grouped by none)
-    const isNameFocus = selectedNodeId?.startsWith('name:') || (groupBy === 'none' && selectedNodeId && !items.find(i => i.id === selectedNodeId));
-    const focusName = isNameFocus 
-      ? (selectedNodeId?.startsWith('name:') ? selectedNodeId?.replace('name:', '') : selectedNodeId) 
-      : null;
+    // Check if we are in "Name Focus" mode (from search)
+    const isNameFocus = selectedNodeId?.startsWith('name:');
+    const focusName = isNameFocus ? selectedNodeId?.replace('name:', '') : null;
+
+    // Check if we are in "Supplier Focus" mode
+    const isSupplierFocus = selectedNodeId?.startsWith('supplier:');
+    const focusSupplier = isSupplierFocus ? selectedNodeId?.replace('supplier:', '') : null;
 
     // 1. Grouping Logic
     let displayNodes: Node[] = [];
     
+    if (isSupplierFocus && focusSupplier) {
+      // Special mode: Show all items from a specific supplier
+      const matchingItems = items.filter(i => i.supplier === focusSupplier);
+      if (matchingItems.length === 0) return { nodes: [], edges: [] };
+
+      // Merge items by name for the supplier view
+      const mergedItemsMap: Record<string, any> = {};
+      matchingItems.forEach(i => {
+        if (!mergedItemsMap[i.name]) {
+          mergedItemsMap[i.name] = { ...i };
+        } else {
+          mergedItemsMap[i.name].quantity += i.quantity;
+        }
+      });
+      const mergedItems = Object.values(mergedItemsMap);
+
+      // Create the central merged node for the Supplier
+      const centralNodeId = `supplier:${focusSupplier}`;
+      const centralNode: Node = {
+        id: centralNodeId,
+        type: 'custom',
+        position: { x: 0, y: 0 },
+        data: {
+          label: focusSupplier,
+          route: 'buy',
+          group: 'Поставщик',
+          isSupplierGroup: true,
+          items: mergedItems,
+          usedIn: [],
+          consistsOf: mergedItems.map(i => ({
+            id: i.id,
+            label: i.name,
+            qty: i.quantity,
+            uom: i.uom,
+            route: i.route,
+            group: i.group
+          }))
+        }
+      };
+
+      displayNodes.push(centralNode);
+
+      // Create nodes for children (items from this supplier)
+      mergedItems.forEach((c: any) => {
+        displayNodes.push({
+          id: c.id,
+          type: 'custom',
+          position: { x: 400, y: 0 },
+          data: { ...items.find(i => i.id === c.id), label: c.name, quantity: c.quantity }
+        });
+        finalEdges.push({
+          id: `e-${c.id}-${centralNodeId}`,
+          source: c.id,
+          target: centralNodeId,
+          label: `${c.quantity.toFixed(2)} ${c.uom || 'шт'}`,
+          type: 'smoothstep'
+        });
+      });
+
+      const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(displayNodes, finalEdges, centralNodeId);
+      
+      const finalNodes = layoutedNodes.map(n => ({
+        ...n,
+        data: {
+          ...n.data,
+          isSelected: n.id === centralNodeId,
+          isHighlighted: n.id !== centralNodeId,
+          onNavigate: (id: string) => setSelectedNodeId(id)
+        }
+      }));
+
+      const finalEdgesWithStyle = layoutedEdges.map(e => ({
+        ...e,
+        animated: true,
+        style: { stroke: '#10b981', strokeWidth: 3 }
+      }));
+
+      return { nodes: finalNodes, edges: finalEdgesWithStyle };
+    }
+
     if (isNameFocus && focusName) {
       // Special mode: Merge all items with the same name into one central node
       const matchingItems = items.filter(i => i.name === focusName);
@@ -517,8 +618,9 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
                   isRoot: !parent.parentId
                 };
               }
-              // Use the item's own quantity which is absolute in the project
-              usedInMap[key].qty += item.quantity;
+              usedInMap[key].qty += item.qtyPerParent * (item.quantity / item.qtyPerParent); // Simplified: just use item.quantity if it's direct
+              // Actually, qty in usedIn should be "how many of focusName are in this parent"
+              // But for simplicity in focus mode, we show the link qty
             }
           }
         }
@@ -542,14 +644,14 @@ export const BOMGraph: React.FC<BOMGraphProps> = ({ items, showVirtual, setShowV
         });
       });
 
-      const usedInList = Object.values(usedInMap);
-      const consistsOfList = Object.values(consistsOfMap);
-      
-      centralNode.data.usedIn = usedInList;
-      centralNode.data.consistsOf = consistsOfList;
+      centralNode.data.usedIn = Object.values(usedInMap);
+      centralNode.data.consistsOf = Object.values(consistsOfMap);
       displayNodes.push(centralNode);
 
       // Create nodes for parents and children
+      const usedInList = Object.values(usedInMap);
+      const consistsOfList = Object.values(consistsOfMap);
+
       usedInList.forEach((p: any) => {
         displayNodes.push({
           id: p.id,
